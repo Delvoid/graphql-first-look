@@ -7,6 +7,8 @@ import { APP_SECRET } from './auth';
 import { compare, hash } from 'bcryptjs';
 import { sign } from 'jsonwebtoken';
 
+import { PubSubChannels } from './pubsub';
+
 const resolvers = {
   Query: {
     info: () => `This is the API of a Hackernews Clone`,
@@ -36,6 +38,14 @@ const resolvers = {
 
       return context.prisma.link.findUnique({ where: { id: parent.id } }).postedBy();
     },
+    votes: (parent: Link, args: {}, context: GraphQLContext) =>
+      context.prisma.link.findUnique({ where: { id: parent.id } }).votes(),
+  },
+  Vote: {
+    link: (parent: User, args: {}, context: GraphQLContext) =>
+      context.prisma.vote.findUnique({ where: { id: parent.id } }).link(),
+    user: (parent: User, args: {}, context: GraphQLContext) =>
+      context.prisma.vote.findUnique({ where: { id: parent.id } }).user(),
   },
 
   Mutation: {
@@ -55,6 +65,8 @@ const resolvers = {
           postedBy: { connect: { id: context.currentUser.id } },
         },
       });
+
+      context.pubSub.publish('newLink', { createdLink: newLink });
 
       return newLink;
     },
@@ -102,6 +114,59 @@ const resolvers = {
         token,
         user,
       };
+    },
+    vote: async (parent: unknown, args: { linkId: string }, context: GraphQLContext) => {
+      // 1
+      if (!context.currentUser) {
+        throw new Error('You must login in order to use upvote!');
+      }
+
+      const userId = context.currentUser.id;
+
+      // 2
+      const vote = await context.prisma.vote.findUnique({
+        where: {
+          linkId_userId: {
+            linkId: Number(args.linkId),
+            userId: userId,
+          },
+        },
+      });
+
+      if (vote !== null) {
+        throw new Error(`Already voted for link: ${args.linkId}`);
+      }
+
+      // 3
+      const newVote = await context.prisma.vote.create({
+        data: {
+          user: { connect: { id: userId } },
+          link: { connect: { id: Number(args.linkId) } },
+        },
+      });
+
+      // 4
+      context.pubSub.publish('newVote', { createdVote: newVote });
+
+      return newVote;
+    },
+  },
+  Subscription: {
+    newLink: {
+      subscribe: (parent: unknown, args: {}, context: GraphQLContext) => {
+        return context.pubSub.asyncIterator('newLink');
+      },
+      resolve: (payload: PubSubChannels['newLink'][0]) => {
+        return payload.createdLink;
+      },
+    },
+    newVote: {
+      subscribe: (parent: unknown, args: {}, context: GraphQLContext) => {
+        return context.pubSub.asyncIterator('newVote');
+      },
+      resolve: (payload: PubSubChannels['newVote'][0]) => {
+        return payload.createdVote;
+      },
     },
   },
 };
