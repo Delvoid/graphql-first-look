@@ -1,7 +1,7 @@
 import { makeExecutableSchema } from '@graphql-tools/schema';
 import { GraphQLContext } from './context';
 import typeDefs from './schema.graphql';
-import { Link, User } from '@prisma/client';
+import { Link, Prisma, User } from '@prisma/client';
 // auth
 import { APP_SECRET } from './auth';
 import { compare, hash } from 'bcryptjs';
@@ -12,8 +12,38 @@ import { PubSubChannels } from './pubsub';
 const resolvers = {
   Query: {
     info: () => `This is the API of a Hackernews Clone`,
-    feed: async (parent: unknown, args: {}, context: GraphQLContext) => {
-      return context.prisma.link.findMany();
+    feed: async (
+      parent: unknown,
+      args: {
+        filter?: string;
+        skip?: number;
+        take?: number;
+        orderBy?: {
+          description?: Prisma.SortOrder;
+          url?: Prisma.SortOrder;
+          createdAt?: Prisma.SortOrder;
+        };
+      },
+      context: GraphQLContext
+    ) => {
+      const where = args.filter
+        ? {
+            OR: [{ description: { contains: args.filter } }, { url: { contains: args.filter } }],
+          }
+        : {};
+
+      const totalCount = await context.prisma.link.count({ where });
+      const links = await context.prisma.link.findMany({
+        where,
+        skip: args.skip,
+        take: args.take,
+        orderBy: args.orderBy,
+      });
+
+      return {
+        count: totalCount,
+        links,
+      };
     },
     me: (parent: unknown, args: {}, context: GraphQLContext) => {
       if (context.currentUser === null) {
@@ -116,14 +146,12 @@ const resolvers = {
       };
     },
     vote: async (parent: unknown, args: { linkId: string }, context: GraphQLContext) => {
-      // 1
       if (!context.currentUser) {
         throw new Error('You must login in order to use upvote!');
       }
 
       const userId = context.currentUser.id;
 
-      // 2
       const vote = await context.prisma.vote.findUnique({
         where: {
           linkId_userId: {
@@ -137,7 +165,6 @@ const resolvers = {
         throw new Error(`Already voted for link: ${args.linkId}`);
       }
 
-      // 3
       const newVote = await context.prisma.vote.create({
         data: {
           user: { connect: { id: userId } },
@@ -145,7 +172,6 @@ const resolvers = {
         },
       });
 
-      // 4
       context.pubSub.publish('newVote', { createdVote: newVote });
 
       return newVote;
